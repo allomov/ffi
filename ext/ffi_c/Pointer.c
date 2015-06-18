@@ -1,29 +1,43 @@
 /*
  * Copyright (c) 2008, 2009, Wayne Meissner
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdbool.h>
-#include <stdint.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdint.h"
+# include "win32/stdbool.h"
+#endif
 #include <limits.h>
 #include <ruby.h>
 #include "rbffi.h"
-#include "endian.h"
+#include "rbffi_endian.h"
 #include "AbstractMemory.h"
 #include "Pointer.h"
 
@@ -173,7 +187,7 @@ ptr_initialize_copy(VALUE self, VALUE other)
     dst->memory.size = src->size;
     dst->memory.typeSize = src->typeSize;
     
-    // finally, copy the actual memory contents
+    /* finally, copy the actual memory contents */
     memcpy(dst->memory.address, src->address, src->size);
 
     return self;
@@ -284,6 +298,10 @@ ptr_equals(VALUE self, VALUE other)
     
     Data_Get_Struct(self, Pointer, ptr);
 
+    if (NIL_P(other)) {
+        return ptr->memory.address == NULL ? Qtrue : Qfalse;
+    }
+
     return ptr->memory.address == POINTER(other)->address ? Qtrue : Qfalse;
 }
 
@@ -310,9 +328,9 @@ ptr_address(VALUE self)
 
 /*
  * Get or set +self+'s endianness
- * @overload ptr.order
+ * @overload order
  *  @return [:big, :little] endianness of +self+
- * @overload ptr.order(order)
+ * @overload order(order)
  *  @param  [Symbol] order endianness to set (+:little+, +:big+ or +:network+). +:big+ and +:network+ 
  *   are synonymous.
  *  @return [self]
@@ -374,9 +392,24 @@ ptr_free(VALUE self)
             ptr->storage = NULL;
         }
         ptr->allocated = false;
+
+    } else {
+        VALUE caller = rb_funcall(rb_funcall(Qnil, rb_intern("caller"), 0), rb_intern("first"), 0);
+        
+        rb_warn("calling free on non allocated pointer %s from %s", RSTRING_PTR(ptr_inspect(self)), RSTRING_PTR(rb_str_to_str(caller)));
     }
 
     return self;
+}
+
+static VALUE
+ptr_type_size(VALUE self)
+{
+    Pointer* ptr;
+
+    Data_Get_Struct(self, Pointer, ptr);
+    
+    return INT2NUM(ptr->memory.typeSize);
 }
 
 /*
@@ -432,8 +465,9 @@ void
 rbffi_Pointer_Init(VALUE moduleFFI)
 {
     VALUE rbNullAddress = ULL2NUM(0);
+    VALUE ffi_AbstractMemory =  rbffi_AbstractMemoryClass;
 
-    /* 
+    /*
      * Document-class: FFI::Pointer < FFI::AbstractMemory
      * Pointer class is used to manage C pointers with ease. A {Pointer} object is defined by his
      * {#address} (as a C pointer). It permits additions with an integer for pointer arithmetic.
@@ -442,7 +476,7 @@ rbffi_Pointer_Init(VALUE moduleFFI)
      * A pointer object may autorelease his contents when freed (by default). This behaviour may be
      * changed with {#autorelease=} method.
      */
-    rbffi_PointerClass = rb_define_class_under(moduleFFI, "Pointer", rbffi_AbstractMemoryClass);
+    rbffi_PointerClass = rb_define_class_under(moduleFFI, "Pointer", ffi_AbstractMemory);
     /*
      * Document-variable: Pointer
      */
@@ -463,6 +497,7 @@ rbffi_Pointer_Init(VALUE moduleFFI)
     rb_define_method(rbffi_PointerClass, "autorelease=", ptr_autorelease, 1);
     rb_define_method(rbffi_PointerClass, "autorelease?", ptr_autorelease_p, 0);
     rb_define_method(rbffi_PointerClass, "free", ptr_free, 0);
+    rb_define_method(rbffi_PointerClass, "type_size", ptr_type_size, 0);
 
     rbffi_NullPointerSingleton = rb_class_new_instance(1, &rbNullAddress, rbffi_PointerClass);
     /*

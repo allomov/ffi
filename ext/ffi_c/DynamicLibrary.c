@@ -1,33 +1,48 @@
 /*
  * Copyright (c) 2008-2010 Wayne Meissner
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <sys/types.h>
 #include <stdio.h>
-#include <stdint.h>
-#if defined(_WIN32) || defined(__WIN32__)
+#ifndef _MSC_VER
+#  include <stdint.h>
+#endif
+#if (defined(_WIN32) || defined(__WIN32__)) && !defined(__CYGWIN__)
+# include <winsock2.h>
 # define _WINSOCKAPI_
 # include <windows.h>
 #else
 # include <dlfcn.h>
 #endif
 #include <ruby.h>
+#if defined(_MSC_VER) && !defined(INT8_MIN)
+#  include "win32/stdint.h"
+#endif
 
 #include <ffi.h>
 
@@ -53,20 +68,16 @@ static void symbol_mark(LibrarySymbol* sym);
 
 static VALUE LibraryClass = Qnil, SymbolClass = Qnil;
 
-#if defined(_WIN32) || defined(__WIN32__)
+#if (defined(_WIN32) || defined(__WIN32__)) && !defined(__CYGWIN__)
 static void* dl_open(const char* name, int flags);
 static void dl_error(char* buf, int size);
 #define dl_sym(handle, name) GetProcAddress(handle, name)
 #define dl_close(handle) FreeLibrary(handle)
-enum { RTLD_LAZY=1, RTLD_NOW, RTLD_GLOBAL, RTLD_LOCAL };
 #else
 # define dl_open(name, flags) dlopen(name, flags != 0 ? flags : RTLD_LAZY)
 # define dl_error(buf, size) do { snprintf(buf, size, "%s", dlerror()); } while(0)
 # define dl_sym(handle, name) dlsym(handle, name)
 # define dl_close(handle) dlclose(handle)
-#ifndef RTLD_LOCAL
-# define RTLD_LOCAL 8
-#endif
 #endif
 
 static VALUE
@@ -117,6 +128,15 @@ library_initialize(VALUE self, VALUE libname, VALUE libflags)
                 libname != Qnil ? StringValueCStr(libname) : "[current process]",
                 errmsg);
     }
+#ifdef __CYGWIN__
+    // On Cygwin 1.7.17 "dlsym(dlopen(0,0), 'getpid')" fails. (dlerror: "No such process")
+    // As a workaround we can use "dlsym(RTLD_DEFAULT, 'getpid')" instead.
+    // Since 0 == RTLD_DEFAULT we won't call dl_close later.
+    if (libname == Qnil) {
+        dl_close(library->handle);
+        library->handle = RTLD_DEFAULT;
+    }
+#endif
     rb_iv_set(self, "@name", libname != Qnil ? libname : rb_str_new2("[current process]"));
     return self;
 }
@@ -149,7 +169,7 @@ library_dlerror(VALUE self)
 static void
 library_free(Library* library)
 {
-    // dlclose() on MacOS tends to segfault - avoid it
+    /* dlclose() on MacOS tends to segfault - avoid it */
 #ifndef __APPLE__
     if (library->handle != NULL) {
         dl_close(library->handle);
@@ -158,7 +178,7 @@ library_free(Library* library)
     xfree(library);
 }
 
-#if defined(_WIN32) || defined(__WIN32__)
+#if (defined(_WIN32) || defined(__WIN32__)) && !defined(__CYGWIN__)
 static void*
 dl_open(const char* name, int flags)
 {
@@ -264,7 +284,7 @@ rbffi_DynamicLibrary_Init(VALUE moduleFFI)
      * Document-const: FFI::NativeLibrary
      * Backward compatibility for FFI::DynamicLibrary
      */
-    rb_define_const(moduleFFI, "NativeLibrary", LibraryClass); // backwards compat library
+    rb_define_const(moduleFFI, "NativeLibrary", LibraryClass); /* backwards compat library */
     rb_define_alloc_func(LibraryClass, library_allocate);
     rb_define_singleton_method(LibraryClass, "open", library_open, 2);
     rb_define_singleton_method(LibraryClass, "last_error", library_dlerror, 0);
@@ -297,13 +317,21 @@ rbffi_DynamicLibrary_Init(VALUE moduleFFI)
     rb_undef_method(SymbolClass, "new");
     rb_define_method(SymbolClass, "inspect", symbol_inspect, 0);
     rb_define_method(SymbolClass, "initialize_copy", symbol_initialize_copy, 1);
-    
 
 #define DEF(x) rb_define_const(LibraryClass, "RTLD_" #x, UINT2NUM(RTLD_##x))
     DEF(LAZY);
     DEF(NOW);
     DEF(GLOBAL);
     DEF(LOCAL);
+    DEF(NOLOAD);
+    DEF(NODELETE);
+    DEF(FIRST);
+    DEF(DEEPBIND);
+    DEF(MEMBER);
+    DEF(BINDING_MASK);
+    DEF(LOCATION_MASK);
+    DEF(ALL_MASK);
+#undef DEF
 
 }
 

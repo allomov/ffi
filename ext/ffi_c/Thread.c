@@ -1,77 +1,102 @@
 /*
  * Copyright (c) 2010 Wayne Meissner
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _MSC_VER
 #include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 
-#ifndef _WIN32
+#if defined(__CYGWIN__) || !defined(_WIN32)
 # include <pthread.h>
 # include <errno.h>
 # include <signal.h>
+# include <unistd.h>
 #else
+# include <winsock2.h>
 # define _WINSOCKAPI_
 # include <windows.h>
 #endif
 #include <fcntl.h>
 #include "Thread.h"
 
-
-#ifndef HAVE_RUBY_THREAD_HAS_GVL_P
-rbffi_thread_t rbffi_active_thread;
-
-rbffi_thread_t
-rbffi_thread_self()
-{
-    rbffi_thread_t self;
 #ifdef _WIN32
-    self.id = GetCurrentThreadId();
+static volatile DWORD frame_thread_key = TLS_OUT_OF_INDEXES;
 #else
-    self.id = pthread_self();
+static pthread_key_t thread_data_key;
+struct thread_data {
+    rbffi_frame_t* frame;
+};
+static inline struct thread_data* thread_data_get(void);
+
 #endif
-    self.valid = true;
 
-    return self;
-}
-
-bool
-rbffi_thread_equal(const rbffi_thread_t* lhs, const rbffi_thread_t* rhs)
+rbffi_frame_t*
+rbffi_frame_current(void)
 {
-    return lhs->valid && rhs->valid && 
 #ifdef _WIN32
-            lhs->id == rhs->id;
+    return (rbffi_frame_t *) TlsGetValue(frame_thread_key);
 #else
-            pthread_equal(lhs->id, rhs->id);
+    struct thread_data* td = (struct thread_data *) pthread_getspecific(thread_data_key);
+    return td != NULL ? td->frame : NULL;
 #endif
 }
 
-bool
-rbffi_thread_has_gvl_p(void)
+void 
+rbffi_frame_push(rbffi_frame_t* frame)
 {
+    memset(frame, 0, sizeof(*frame));
+    frame->has_gvl = true;
+    frame->exc = Qnil;
+    
 #ifdef _WIN32
-    return rbffi_active_thread.valid && rbffi_active_thread.id == GetCurrentThreadId();
+    frame->prev = TlsGetValue(frame_thread_key);
+    TlsSetValue(frame_thread_key, frame);
 #else
-    return rbffi_active_thread.valid && pthread_equal(rbffi_active_thread.id, pthread_self());
+    frame->td = thread_data_get();
+    frame->prev = frame->td->frame;
+    frame->td->frame = frame;
 #endif
 }
-#endif // HAVE_RUBY_THREAD_HAS_GVL_P
 
-#ifndef HAVE_RB_THREAD_BLOCKING_REGION
+void 
+rbffi_frame_pop(rbffi_frame_t* frame)
+{
+#ifdef _WIN32
+    TlsSetValue(frame_thread_key, frame->prev);
+#else
+    frame->td->frame = frame->prev;
+#endif
+}
+
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
 
 #if !defined(_WIN32)
 
@@ -285,35 +310,43 @@ rbffi_thread_blocking_region(VALUE (*func)(void *), void *data1, void (*ubf)(voi
     return thr->retval;
 }
 
+#endif /* !_WIN32 */
 
-#if 0
+#endif /* HAVE_RB_THREAD_BLOCKING_REGION */
 
-/*
- * FIXME: someone needs to implement something similar to the posix pipe based
- * blocking region implementation above for ruby1.8.x on win32
- */
-VALUE
-rbffi_thread_blocking_region(VALUE (*func)(void *), void *data1, void (*ubf)(void *), void *data2)
+#ifndef _WIN32
+static struct thread_data* thread_data_init(void);
+
+static inline struct thread_data*
+thread_data_get(void)
 {
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-    rbffi_thread_t oldThread;
-#endif
-    VALUE res;
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-    oldThread = rbffi_active_thread;
-    rbffi_active_thread = rbffi_thread_self();
-#endif
+    struct thread_data* td = (struct thread_data *) pthread_getspecific(thread_data_key);
+    return td != NULL ? td : thread_data_init();
+}
 
-    res = (*func)(data1);
+static struct thread_data*
+thread_data_init(void)
+{
+    struct thread_data* td = calloc(1, sizeof(struct thread_data));
 
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-    rbffi_active_thread = oldThread;
-#endif
-  return res;
+    pthread_setspecific(thread_data_key, td);
+
+    return td;
+}
+
+static void
+thread_data_free(void *ptr)
+{
+    free(ptr);
 }
 #endif
 
-#endif /* !_WIN32 */
-
-#endif // HAVE_RB_THREAD_BLOCKING_REGION
-
+void
+rbffi_Thread_Init(VALUE moduleFFI)
+{
+#ifdef _WIN32
+    frame_thread_key = TlsAlloc();
+#else
+    pthread_key_create(&thread_data_key, thread_data_free);    
+#endif
+}

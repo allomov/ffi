@@ -1,32 +1,48 @@
 /*
  * Copyright (c) 2009, 2010 Wayne Meissner
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _MSC_VER
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
 #ifndef _WIN32
-#  include <sys/mman.h>
+# include <sys/mman.h>
 #endif
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdint.h"
+# include "win32/stdbool.h"
+#endif
 #ifndef _WIN32
-#  include <unistd.h>
+# include <unistd.h>
 #endif
 #include <errno.h>
 #include <ruby.h>
@@ -69,7 +85,7 @@
 static bool prep_trampoline(void* ctx, void* code, Closure* closure, char* errmsg, size_t errmsgsize);
 static long trampoline_size(void);
 
-#if defined(__x86_64__) && defined(__GNUC__)
+#if defined(__x86_64__) && (defined(__linux__) || defined(__APPLE__))
 # define CUSTOM_TRAMPOLINE 1
 #endif
 
@@ -115,12 +131,6 @@ rbffi_MethodHandle_CodeAddress(MethodHandle* handle)
 
 #ifndef CUSTOM_TRAMPOLINE
 static void attached_method_invoke(ffi_cif* cif, void* retval, METHOD_PARAMS parameters, void* user_data);
-
-static ffi_type* methodHandleParamTypes[] = {
-    &ffi_type_sint,
-    &ffi_type_pointer,
-    &ffi_type_ulong,
-};
 
 static ffi_cif mh_cif;
 
@@ -192,7 +202,7 @@ static VALUE custom_trampoline(int argc, VALUE* argv, VALUE self, Closure*);
  *
  * This results in approx a 30% speedup for x86_64 FFI dispatch
  */
-asm(
+__asm__(
     ".text\n\t"
     ".globl ffi_trampoline\n\t"
     ".globl _ffi_trampoline\n\t"
@@ -233,7 +243,7 @@ static VALUE custom_trampoline(caddr_t args, Closure*);
  * This does not make a discernable difference vs a raw closure, so for now,
  * it is not enabled.
  */
-asm(
+__asm__(
     ".text\n\t"
     ".globl ffi_trampoline\n\t"
     ".globl _ffi_trampoline\n\t"
@@ -303,7 +313,7 @@ prep_trampoline(void* ctx, void* code, Closure* closure, char* errmsg, size_t er
     caddr_t ptr = (caddr_t) code;
 
     memcpy(ptr, &ffi_trampoline, trampoline_size());
-    // Patch the context and function addresses into the stub code
+    /* Patch the context and function addresses into the stub code */
     *(intptr_t *)(ptr + trampoline_ctx_offset) = (intptr_t) closure;
     *(intptr_t *)(ptr + trampoline_func_offset) = (intptr_t) custom_trampoline;
 
@@ -322,7 +332,15 @@ trampoline_size(void)
 void
 rbffi_MethodHandle_Init(VALUE module)
 {
-    ffi_status ffiStatus;
+#ifndef CUSTOM_TRAMPOLINE
+    ffi_status ffiStatus;	
+    ffi_type* methodHandleParamTypes[] = {
+        &ffi_type_sint,
+        &ffi_type_pointer,
+        &ffi_type_ulong,
+    };
+#endif
+
     defaultClosurePool = rbffi_ClosurePool_New((int) trampoline_size(), prep_trampoline, NULL);
 
 #if defined(CUSTOM_TRAMPOLINE)

@@ -1,29 +1,44 @@
 /*
  * Copyright (c) 2008-2010 Wayne Meissner
+ * Copyright (C) 2009 Aman Gupta <aman@tmm1.net>
  * 
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdbool.h>
-#include <stdint.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <limits.h>
 #include <ruby.h>
 #include "rbffi.h"
-#include "endian.h"
+#include "rbffi_endian.h"
 #include "AbstractMemory.h"
 
 #define BUFFER_EMBED_MAXLEN (8)
@@ -33,7 +48,7 @@ typedef struct Buffer {
     union {
         VALUE rbParent; /* link to parent buffer */
         char* storage; /* start of malloc area */
-        long embed[BUFFER_EMBED_MAXLEN / sizeof(long)]; // storage for tiny allocations
+        long embed[BUFFER_EMBED_MAXLEN / sizeof(long)]; /* storage for tiny allocations */
     } data;
 } Buffer;
 
@@ -143,7 +158,7 @@ buffer_initialize_copy(VALUE self, VALUE other)
     dst->memory.size = src->size;
     dst->memory.typeSize = src->typeSize;
     
-    // finally, copy the actual buffer contents
+    /* finally, copy the actual buffer contents */
     memcpy(dst->memory.address, src->address, src->size);
 
     return self;
@@ -302,12 +317,14 @@ buffer_mark(Buffer* ptr)
 void
 rbffi_Buffer_Init(VALUE moduleFFI)
 {
+    VALUE ffi_AbstractMemory =  rbffi_AbstractMemoryClass;
+
     /*
      * Document-class: FFI::Buffer < FFI::AbstractMemory
      *
      * A Buffer is a function argument type. It should be use with functions playing with C arrays.
      */
-    BufferClass = rb_define_class_under(moduleFFI, "Buffer", rbffi_AbstractMemoryClass);
+    BufferClass = rb_define_class_under(moduleFFI, "Buffer", ffi_AbstractMemory);
 
     /*
      * Document-variable: FFI::Buffer

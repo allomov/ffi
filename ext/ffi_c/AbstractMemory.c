@@ -1,34 +1,53 @@
 /*
  * Copyright (c) 2008, 2009, Wayne Meissner
+ * Copyright (C) 2009 Jake Douglas <jake@shiftedlabs.com>
+ * Copyright (C) 2008 Luc Heinrich <luc@honk-honk.com>
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <sys/types.h>
-#include <sys/param.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <sys/param.h>
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
+
 #include <limits.h>
 #include <ruby.h>
+
 #include "rbffi.h"
 #include "compat.h"
 #include "AbstractMemory.h"
 #include "Pointer.h"
 #include "Function.h"
+#include "LongDouble.h"
 
 
 static inline char* memory_address(VALUE self);
@@ -233,6 +252,7 @@ NUM_OP(long, long, NUM2LONG, LONG2NUM, SWAPSLONG);
 NUM_OP(ulong, unsigned long, NUM2ULONG, ULONG2NUM, SWAPULONG);
 NUM_OP(float32, float, NUM2DBL, rb_float_new, NOSWAP);
 NUM_OP(float64, double, NUM2DBL, rb_float_new, NOSWAP);
+NUM_OP(longdouble, long double, rbffi_num2longdouble, rbffi_longdouble_new, NOSWAP);
 
 static inline void*
 get_pointer_value(VALUE value)
@@ -420,11 +440,6 @@ memory_put_string(VALUE self, VALUE offset, VALUE str)
 
     checkWrite(ptr);
     checkBounds(ptr, off, len + 1);
-    
-    if (rb_safe_level() >= 1 && OBJ_TAINTED(str)) {
-        rb_raise(rb_eSecurityError, "Writing unsafe string to memory");
-        return Qnil;
-    }
 
     memcpy(ptr->address + off, RSTRING_PTR(str), len);
     *((char *) ptr->address + off + len) = '\0';
@@ -580,6 +595,18 @@ memory_address(VALUE obj)
     return ((AbstractMemory *) DATA_PTR(obj))->address;
 }
 
+static VALUE
+memory_copy_from(VALUE self, VALUE rbsrc, VALUE rblen)
+{
+    AbstractMemory* dst;
+
+    Data_Get_Struct(self, AbstractMemory, dst);
+
+    memcpy(dst->address, rbffi_AbstractMemory_Cast(rbsrc, rbffi_AbstractMemoryClass)->address, NUM2INT(rblen));
+
+    return self;
+}
+
 AbstractMemory*
 rbffi_AbstractMemory_Cast(VALUE obj, VALUE klass)
 {
@@ -628,24 +655,24 @@ memory_op_put_strptr(AbstractMemory* ptr, long offset, VALUE value)
 
 static MemoryOp memory_op_strptr = { memory_op_get_strptr, memory_op_put_strptr };
 
-//static MemoryOp memory_op_pointer = { memory_op_get_pointer, memory_op_put_pointer };
 
 MemoryOps rbffi_AbstractMemoryOps = {
-    &memory_op_int8, //.int8
-    &memory_op_uint8, //.uint8
-    &memory_op_int16, //.int16
-    &memory_op_uint16, //.uint16
-    &memory_op_int32, //.int32
-    &memory_op_uint32, //.uint32
-    &memory_op_int64, //.int64
-    &memory_op_uint64, //.uint64
-    &memory_op_long, //.slong
-    &memory_op_ulong, //.uslong
-    &memory_op_float32, //.float32
-    &memory_op_float64, //.float64
-    &memory_op_pointer, //.pointer
-    &memory_op_strptr, //.strptr
-    &memory_op_bool //.boolOp
+    &memory_op_int8, /*.int8 */
+    &memory_op_uint8, /* .uint8 */
+    &memory_op_int16, /* .int16 */
+    &memory_op_uint16, /* .uint16 */
+    &memory_op_int32, /* .int32 */
+    &memory_op_uint32, /* .uint32 */
+    &memory_op_int64, /* .int64 */
+    &memory_op_uint64, /* .uint64 */
+    &memory_op_long, /* .slong */
+    &memory_op_ulong, /* .uslong */
+    &memory_op_float32, /* .float32 */
+    &memory_op_float64, /* .float64 */
+    &memory_op_longdouble, /* .longdouble */
+    &memory_op_pointer, /* .pointer */
+    &memory_op_strptr, /* .strptr */
+    &memory_op_bool /* .boolOp */
 };
 
 void
@@ -996,6 +1023,7 @@ rbffi_AbstractMemory_Init(VALUE moduleFFI)
     rb_define_alias(classMemory, "size", "total");
     rb_define_method(classMemory, "type_size", memory_type_size, 0);
     rb_define_method(classMemory, "[]", memory_aref, 1);
+    rb_define_method(classMemory, "__copy_from__", memory_copy_from, 2);
 
     id_to_ptr = rb_intern("to_ptr");
     id_call = rb_intern("call");

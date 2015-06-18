@@ -1,30 +1,42 @@
 /*
  * Copyright (c) 2008, 2009, Wayne Meissner
- * Copyright (c) 2009, Luc Heinrich <luc@honk-honk.com>
+ * Copyright (C) 2009 Luc Heinrich <luc@honk-honk.com>
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <sys/types.h>
-
-#include "Function.h"
-#include <sys/param.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <sys/param.h>
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <ruby.h>
 #include "rbffi.h"
 #include "compat.h"
@@ -33,10 +45,11 @@
 #include "MemoryPointer.h"
 #include "Function.h"
 #include "Types.h"
-#include "Struct.h"
+#include "Function.h"
 #include "StructByValue.h"
 #include "ArrayType.h"
 #include "MappedType.h"
+#include "Struct.h"
 
 typedef struct InlineArray_ {
     VALUE rbMemory;
@@ -84,6 +97,13 @@ struct_allocate(VALUE klass)
     return obj;
 }
 
+/*
+ * call-seq: initialize
+ * @overload initialize(pointer, *args)
+ *  @param [AbstractMemory] pointer
+ *  @param [Array] args
+ * @return [self]
+ */
 static VALUE
 struct_initialize(int argc, VALUE* argv, VALUE self)
 {
@@ -118,12 +138,16 @@ struct_initialize(int argc, VALUE* argv, VALUE self)
     return self;
 }
 
+/*
+ * call-seq: initialize_copy(other)
+ * @return [nil]
+ * DO NOT CALL THIS METHOD
+ */
 static VALUE
 struct_initialize_copy(VALUE self, VALUE other)
 {
     Struct* src;
     Struct* dst;
-    VALUE memargs[3];
     
     Data_Get_Struct(self, Struct, dst);
     Data_Get_Struct(other, Struct, src);
@@ -134,16 +158,13 @@ struct_initialize_copy(VALUE self, VALUE other)
     dst->rbLayout = src->rbLayout;
     dst->layout = src->layout;
     
-    //
-    // A new MemoryPointer instance is allocated here instead of just calling 
-    // #dup on rbPointer, since the Pointer may not know its length, or may
-    // be longer than just this struct.
-    //
+    /*
+     * A new MemoryPointer instance is allocated here instead of just calling
+     * #dup on rbPointer, since the Pointer may not know its length, or may
+     * be longer than just this struct.
+     */
     if (src->pointer->address != NULL) {
-        memargs[0] = INT2FIX(1);
-        memargs[1] = INT2FIX(src->layout->size);
-        memargs[2] = Qfalse;
-        dst->rbPointer = rb_class_new_instance(2, memargs, rbffi_MemoryPointerClass);
+        dst->rbPointer = rbffi_MemoryPointer_NewInstance(1, src->layout->size, false);
         dst->pointer = MEMORY(dst->rbPointer);
         memcpy(dst->pointer->address, src->pointer->address, src->layout->size);
     } else {
@@ -163,11 +184,11 @@ static VALUE
 struct_class_layout(VALUE klass)
 {
     VALUE layout;
-    if (!rb_cvar_defined(klass, id_layout_ivar)) {
+    if (!rb_ivar_defined(klass, id_layout_ivar)) {
         rb_raise(rb_eRuntimeError, "no Struct layout configured for %s", rb_class2name(klass));
     }
 
-    layout = rb_cvar_get(klass, id_layout_ivar);
+    layout = rb_ivar_get(klass, id_layout_ivar);
     if (!rb_obj_is_kind_of(layout, rbffi_StructLayoutClass)) {
         rb_raise(rb_eRuntimeError, "invalid Struct layout for %s", rb_class2name(klass));
     }
@@ -268,6 +289,7 @@ struct_field(Struct* s, VALUE fieldName)
         return rbField;
     }
 
+    // TODO does this ever return anything?
     rbField = rb_hash_aref(layout->rbFieldMap, fieldName);
     if (rbField == Qnil) {
         VALUE str = rb_funcall2(fieldName, id_to_s, 0, NULL);
@@ -277,6 +299,11 @@ struct_field(Struct* s, VALUE fieldName)
     return rbField;
 }
 
+/*
+ * call-seq: struct[field_name]
+ * @param field_name field to access
+ * Acces to a Struct field.
+ */
 static VALUE
 struct_aref(VALUE self, VALUE fieldName)
 {
@@ -302,6 +329,13 @@ struct_aref(VALUE self, VALUE fieldName)
     }
 }
 
+/*
+ * call-seq: []=(field_name, value)
+ * @param field_name field to access
+ * @param value value to set to +field_name+
+ * @return [value]
+ * Set a field in Struct.
+ */
 static VALUE
 struct_aset(VALUE self, VALUE fieldName, VALUE value)
 {
@@ -336,6 +370,12 @@ struct_aset(VALUE self, VALUE fieldName, VALUE value)
     return value;
 }
 
+/*
+ * call-seq: pointer= pointer
+ * @param [AbstractMemory] pointer
+ * @return [self]
+ * Make Struct point to +pointer+.
+ */
 static VALUE
 struct_set_pointer(VALUE self, VALUE pointer)
 {
@@ -366,6 +406,11 @@ struct_set_pointer(VALUE self, VALUE pointer)
     return self;
 }
 
+/*
+ * call-seq: pointer
+ * @return [AbstractMemory]
+ * Get pointer to Struct contents.
+ */
 static VALUE
 struct_get_pointer(VALUE self)
 {
@@ -376,6 +421,12 @@ struct_get_pointer(VALUE self)
     return s->rbPointer;
 }
 
+/*
+ * call-seq: layout= layout
+ * @param [StructLayout] layout
+ * @return [self]
+ * Set the Struct's layout.
+ */
 static VALUE
 struct_set_layout(VALUE self, VALUE layout)
 {
@@ -394,6 +445,11 @@ struct_set_layout(VALUE self, VALUE layout)
     return self;
 }
 
+/*
+ * call-seq: layout
+ * @return [StructLayout]
+ * Get the Struct's layout.
+ */
 static VALUE
 struct_get_layout(VALUE self)
 {
@@ -404,7 +460,11 @@ struct_get_layout(VALUE self)
     return s->rbLayout;
 }
 
-
+/*
+ * call-seq: null?
+ * @return [Boolean]
+ * Test if Struct's pointer is NULL
+ */
 static VALUE
 struct_null_p(VALUE self)
 {
@@ -415,6 +475,9 @@ struct_null_p(VALUE self)
     return s->pointer->address == NULL ? Qtrue : Qfalse;
 }
 
+/*
+ * (see Pointer#order)
+ */
 static VALUE
 struct_order(int argc, VALUE* argv, VALUE self)
 {
@@ -432,7 +495,6 @@ struct_order(int argc, VALUE* argv, VALUE self)
         return retval;
     }
 }
-
 
 static VALUE
 inline_array_allocate(VALUE klass)
@@ -454,6 +516,13 @@ inline_array_mark(InlineArray* array)
     rb_gc_mark(array->rbMemory);
 }
 
+/*
+ * Document-method: FFI::Struct::InlineArray#initialize
+ * call-seq: initialize(memory, field)
+ * @param [AbstractMemory] memory
+ * @param [StructField] field
+ * @return [self]
+ */
 static VALUE
 inline_array_initialize(VALUE self, VALUE rbMemory, VALUE rbField)
 {
@@ -478,6 +547,11 @@ inline_array_initialize(VALUE self, VALUE rbMemory, VALUE rbField)
     return self;
 }
 
+/*
+ * call-seq: size
+ * @return [Numeric]
+ * Get size
+ */
 static VALUE
 inline_array_size(VALUE self)
 {
@@ -491,13 +565,18 @@ inline_array_size(VALUE self)
 static int
 inline_array_offset(InlineArray* array, int index)
 {
-    if (index < 0 || index >= array->length) {
+    if (index < 0 || (index >= array->length && array->length > 0)) {
         rb_raise(rb_eIndexError, "index %d out of bounds", index);
     }
 
     return (int) array->field->offset + (index * (int) array->componentType->ffiType->size);
 }
 
+/*
+ * call-seq: [](index)
+ * @param [Numeric] index
+ * @return [Type, Struct]
+ */
 static VALUE
 inline_array_aref(VALUE self, VALUE rbIndex)
 {
@@ -528,6 +607,12 @@ inline_array_aref(VALUE self, VALUE rbIndex)
     }
 }
 
+/*
+ * call-seq: []=(index, value)
+ * @param [Numeric] index
+ * @param [Type, Struct]
+ * @return [value]
+ */
 static VALUE
 inline_array_aset(VALUE self, VALUE rbIndex, VALUE rbValue)
 {
@@ -572,6 +657,10 @@ inline_array_aset(VALUE self, VALUE rbIndex, VALUE rbValue)
     return rbValue;
 }
 
+/*
+ * call-seq: each
+ * Yield block for each element of +self+.
+ */
 static VALUE
 inline_array_each(VALUE self)
 {
@@ -588,6 +677,11 @@ inline_array_each(VALUE self)
     return self;
 }
 
+/*
+ * call-seq: to_a
+ * @return [Array]
+ * Convert +self+ to an array.
+ */
 static VALUE
 inline_array_to_a(VALUE self)
 {
@@ -606,6 +700,12 @@ inline_array_to_a(VALUE self)
     return obj;
 }
 
+/*
+ * Document-method: FFI::StructLayout::CharArray#to_s
+ * call-seq: to_s
+ * @return [String]
+ * Convert +self+ to a string.
+ */
 static VALUE
 inline_array_to_s(VALUE self)
 {
@@ -625,7 +725,11 @@ inline_array_to_s(VALUE self)
     return rb_funcall2(array->rbMemory, rb_intern("get_string"), 2, argv);
 }
 
-
+/*
+ * call-seq: to_ptr
+ * @return [AbstractMemory]
+ * Get pointer to +self+ content.
+ */
 static VALUE
 inline_array_to_ptr(VALUE self)
 {
@@ -645,14 +749,37 @@ rbffi_Struct_Init(VALUE moduleFFI)
 
     rbffi_StructLayout_Init(moduleFFI);
 
-    rbffi_StructClass = StructClass = rb_define_class_under(moduleFFI, "Struct", rb_cObject);
+    /*
+     * Document-class: FFI::Struct
+     *
+     * A FFI::Struct means to mirror a C struct.
+     *
+     * A Struct is defined as:
+     *  class MyStruct < FFI::Struct
+     *    layout :value1, :int,
+     *           :value2, :double
+     *  end
+     * and is used as:
+     *  my_struct = MyStruct.new
+     *  my_struct[:value1] = 12
+     *
+     * For more information, see http://github.com/ffi/ffi/wiki/Structs
+     */
+    rbffi_StructClass = rb_define_class_under(moduleFFI, "Struct", rb_cObject);
+    StructClass = rbffi_StructClass; // put on a line alone to help RDoc
     rb_global_variable(&rbffi_StructClass);
 
+    /*
+     * Document-class: FFI::Struct::InlineArray
+     */
     rbffi_StructInlineArrayClass = rb_define_class_under(rbffi_StructClass, "InlineArray", rb_cObject);
     rb_global_variable(&rbffi_StructInlineArrayClass);
 
-    rbffi_StructLayoutCharArrayClass = rb_define_class_under(rbffi_StructLayoutClass,
-        "CharArray", rbffi_StructInlineArrayClass);
+    /*
+     * Document-class: FFI::StructLayout::CharArray < FFI::Struct::InlineArray
+     */
+    rbffi_StructLayoutCharArrayClass = rb_define_class_under(rbffi_StructLayoutClass, "CharArray", 
+                                                             rbffi_StructInlineArrayClass);
     rb_global_variable(&rbffi_StructLayoutCharArrayClass);
 
 

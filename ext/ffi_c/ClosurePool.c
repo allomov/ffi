@@ -1,39 +1,59 @@
 /*
  * Copyright (c) 2009, 2010 Wayne Meissner
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _MSC_VER
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
-#ifndef _WIN32
+#if defined(__CYGWIN__) || !defined(_WIN32)
 #  include <sys/mman.h>
 #endif
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-#ifndef _WIN32
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
+#if defined(__CYGWIN__) || !defined(_WIN32)
 #  include <unistd.h>
 #else
+#  include <winsock2.h>
 #  define _WINSOCKAPI_
 #  include <windows.h>
 #endif
 #include <errno.h>
 #include <ruby.h>
 
+#if defined(_MSC_VER) && !defined(INT8_MIN)
+#  include "win32/stdint.h"
+#endif
 #include <ffi.h>
 #include "rbffi.h"
 #include "compat.h"
@@ -194,7 +214,7 @@ rbffi_Closure_Free(Closure* closure)
     if (closure != NULL) {
         ClosurePool* pool = closure->pool;
         long refcnt;
-        // Just push it on the front of the free list
+        /* Just push it on the front of the free list */
         closure->next = pool->list;
         pool->list = closure;
         refcnt = --(pool->refcnt);
@@ -214,7 +234,7 @@ rbffi_Closure_CodeAddress(Closure* handle)
 static long
 getPageSize()
 {
-#if defined(_WIN32) || defined(__WIN32__)
+#if !defined(__CYGWIN__) && (defined(_WIN32) || defined(__WIN32__))
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return si.dwPageSize;
@@ -226,7 +246,7 @@ getPageSize()
 static void*
 allocatePage(void)
 {
-#if defined(_WIN32) || defined(__WIN32__)
+#if !defined(__CYGWIN__) && (defined(_WIN32) || defined(__WIN32__))
     return VirtualAlloc(NULL, pageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
     caddr_t page = mmap(NULL, pageSize, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -237,7 +257,7 @@ allocatePage(void)
 static bool
 freePage(void *addr)
 {
-#if defined(_WIN32) || defined(__WIN32__)
+#if !defined(__CYGWIN__) && (defined(_WIN32) || defined(__WIN32__))
     return VirtualFree(addr, 0, MEM_RELEASE);
 #else
     return munmap(addr, pageSize) == 0;
@@ -247,7 +267,7 @@ freePage(void *addr)
 static bool
 protectPage(void* page)
 {
-#if defined(_WIN32) || defined(__WIN32__)
+#if !defined(__CYGWIN__) && (defined(_WIN32) || defined(__WIN32__))
     DWORD oldProtect;
     return VirtualProtect(page, pageSize, PAGE_EXECUTE_READ, &oldProtect);
 #else

@@ -1,27 +1,41 @@
 /*
  * Copyright (c) 2010 Wayne Meissner
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef RBFFI_THREAD_H
 #define	RBFFI_THREAD_H
 
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <ruby.h>
 #include "extconf.h"
 
@@ -29,11 +43,6 @@
 extern "C" {
 #endif
 
-
-#ifdef HAVE_RUBY_THREAD_HAS_GVL_P
-    extern int ruby_thread_has_gvl_p(void);
-# define rbffi_thread_has_gvl_p ruby_thread_has_gvl_p
-#else
 
 #ifdef _WIN32
 # include <windows.h>
@@ -48,16 +57,29 @@ typedef struct {
     pthread_t id;
 #endif
     bool valid;
+    bool has_gvl;
+    VALUE exc;
 } rbffi_thread_t;
 
-extern rbffi_thread_t rbffi_active_thread;
-rbffi_thread_t rbffi_thread_self();
-bool rbffi_thread_equal(const rbffi_thread_t* lhs, const rbffi_thread_t* rhs);
-bool rbffi_thread_has_gvl_p(void);
-
+typedef struct rbffi_frame {
+#ifndef _WIN32
+    struct thread_data* td;
 #endif
-#ifdef HAVE_RB_THREAD_BLOCKING_REGION
+    struct rbffi_frame* prev;
+    bool has_gvl;
+    VALUE exc;
+} rbffi_frame_t;
+
+rbffi_frame_t* rbffi_frame_current(void);
+void rbffi_frame_push(rbffi_frame_t* frame);
+void rbffi_frame_pop(rbffi_frame_t* frame);
+
+#ifdef HAVE_RB_THREAD_CALL_WITHOUT_GVL
+# define rbffi_thread_blocking_region rb_thread_call_without_gvl
+
+#elif defined(HAVE_RB_THREAD_BLOCKING_REGION)
 # define rbffi_thread_blocking_region rb_thread_blocking_region
+
 #else
 
 VALUE rbffi_thread_blocking_region(VALUE (*func)(void *), void *data1, void (*ubf)(void *), void *data2);

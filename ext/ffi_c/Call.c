@@ -3,31 +3,47 @@
  * Copyright (c) 2009, Luc Heinrich <luc@honk-honk.com>
  * Copyright (c) 2009, Mike Dalessio <mike.dalessio@gmail.com>
  * Copyright (c) 2009, Aman Gupta.
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _MSC_VER
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <errno.h>
 #include <ruby.h>
-#if defined(HAVE_NATIVETHREAD) && defined(HAVE_RB_THREAD_BLOCKING_REGION) && !defined(_WIN32)
+#if defined(HAVE_NATIVETHREAD) && (defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL)) && !defined(_WIN32)
 #  include <signal.h>
 #  include <pthread.h>
 #endif
@@ -44,6 +60,7 @@
 #include "Call.h"
 #include "MappedType.h"
 #include "Thread.h"
+#include "LongDouble.h"
 
 #ifdef USE_RAW
 #  ifndef __i386__
@@ -58,6 +75,7 @@
 #define FLOAT32_ADJ (4)
 #define FLOAT64_ADJ (8)
 #define ADDRESS_ADJ (sizeof(void *))
+#define LONGDOUBLE_ADJ (ffi_type_longdouble.alignment)
 
 #endif /* USE_RAW */
 
@@ -69,7 +87,6 @@
 
 static void* callback_param(VALUE proc, VALUE cbinfo);
 static inline void* getPointer(VALUE value, int type);
-static inline char* getString(VALUE value, int type);
 
 static ID id_to_ptr, id_map_symbol, id_to_native;
 
@@ -109,18 +126,29 @@ rbffi_SetupCallParams(int argc, VALUE* argv, int paramCount, Type** paramTypes,
         switch (paramType->nativeType) {
 
             case NATIVE_INT8:
-                param->s8 = NUM2INT(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->s8 = NUM2INT(value);
+                } else {
+                    param->s8 = NUM2INT(argv[argidx]);
+                }
+
                 ++argidx;
                 ADJ(param, INT8);
                 break;
 
-
             case NATIVE_INT16:
-                param->s16 = NUM2INT(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->s16 = NUM2INT(value);
+
+                } else {
+                    param->s16 = NUM2INT(argv[argidx]);
+                }
+
                 ++argidx;
                 ADJ(param, INT16);
                 break;
-
 
             case NATIVE_INT32:
                 if (unlikely(type == T_SYMBOL && enums != Qnil)) {
@@ -135,7 +163,6 @@ rbffi_SetupCallParams(int argc, VALUE* argv, int paramCount, Type** paramTypes,
                 ADJ(param, INT32);
                 break;
 
-
             case NATIVE_BOOL:
                 if (type != T_TRUE && type != T_FALSE) {
                     rb_raise(rb_eTypeError, "wrong argument type  (expected a boolean parameter)");
@@ -144,69 +171,141 @@ rbffi_SetupCallParams(int argc, VALUE* argv, int paramCount, Type** paramTypes,
                 ADJ(param, INT8);
                 break;
 
-
             case NATIVE_UINT8:
-                param->u8 = NUM2UINT(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->u8 = NUM2UINT(value);
+                } else {
+                    param->u8 = NUM2UINT(argv[argidx]);
+                }
+
                 ADJ(param, INT8);
                 ++argidx;
                 break;
 
-
             case NATIVE_UINT16:
-                param->u16 = NUM2UINT(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->u16 = NUM2UINT(value);
+                } else {
+                    param->u16 = NUM2UINT(argv[argidx]);
+                }
+
                 ADJ(param, INT16);
                 ++argidx;
                 break;
 
-
             case NATIVE_UINT32:
-                param->u32 = NUM2UINT(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->u32 = NUM2UINT(value);
+                } else {
+                    param->u32 = NUM2UINT(argv[argidx]);
+                }
+
                 ADJ(param, INT32);
                 ++argidx;
                 break;
 
-
             case NATIVE_INT64:
-                param->i64 = NUM2LL(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->i64 = NUM2LL(value);
+                } else {
+                    param->i64 = NUM2LL(argv[argidx]);
+                }
+
                 ADJ(param, INT64);
                 ++argidx;
                 break;
 
-
             case NATIVE_UINT64:
-                param->u64 = NUM2ULL(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->u64 = NUM2ULL(value);
+                } else {
+                    param->u64 = NUM2ULL(argv[argidx]);
+                }
+
                 ADJ(param, INT64);
                 ++argidx;
                 break;
 
             case NATIVE_LONG:
-                *(ffi_sarg *) param = NUM2LONG(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    *(ffi_sarg *) param = NUM2LONG(value);
+                } else {
+                    *(ffi_sarg *) param = NUM2LONG(argv[argidx]);
+                }
+
                 ADJ(param, LONG);
                 ++argidx;
                 break;
 
             case NATIVE_ULONG:
-                *(ffi_arg *) param = NUM2ULONG(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    *(ffi_arg *) param = NUM2ULONG(value);
+                } else {
+                    *(ffi_arg *) param = NUM2ULONG(argv[argidx]);
+                }
+
                 ADJ(param, LONG);
                 ++argidx;
                 break;
 
             case NATIVE_FLOAT32:
-                param->f32 = (float) NUM2DBL(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->f32 = (float) NUM2DBL(value);
+                } else {
+                    param->f32 = (float) NUM2DBL(argv[argidx]);
+                }
+
                 ADJ(param, FLOAT32);
                 ++argidx;
                 break;
 
             case NATIVE_FLOAT64:
-                param->f64 = NUM2DBL(argv[argidx]);
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->f64 = NUM2DBL(value);
+                } else {
+                    param->f64 = NUM2DBL(argv[argidx]);
+                }
+
                 ADJ(param, FLOAT64);
+                ++argidx;
+                break;
+
+            case NATIVE_LONGDOUBLE:
+                if (unlikely(type == T_SYMBOL && enums != Qnil)) {
+                    VALUE value = rb_funcall(enums, id_map_symbol, 1, argv[argidx]);
+                    param->ld = rbffi_num2longdouble(value);
+                } else {
+                    param->ld = rbffi_num2longdouble(argv[argidx]);
+                }
+
+                ADJ(param, LONGDOUBLE);
                 ++argidx;
                 break;
 
 
             case NATIVE_STRING:
-                param->ptr = getString(argv[argidx++], type);
+                if (type == T_NIL) {
+                    param->ptr = NULL; 
+                
+                } else {
+                    if (rb_safe_level() >= 1 && OBJ_TAINTED(argv[argidx])) {
+                        rb_raise(rb_eSecurityError, "Unsafe string parameter");
+                    }
+
+                    param->ptr = StringValueCStr(argv[argidx]);
+                }
+
                 ADJ(param, ADDRESS);
+                ++argidx;
                 break;
 
             case NATIVE_POINTER:
@@ -241,20 +340,24 @@ rbffi_SetupCallParams(int argc, VALUE* argv, int paramCount, Type** paramTypes,
 
 
 typedef struct BlockingCall_ {
+    rbffi_frame_t* frame;
     void* function;
     FunctionType* info;
     void **ffiValues;
     void* retval;
-    void* stkretval;
     void* params;
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
+    void* stkretval;
+#endif
 } BlockingCall;
 
 static VALUE
 call_blocking_function(void* data)
 {
     BlockingCall* b = (BlockingCall *) data;
-
+    b->frame->has_gvl = false;
     ffi_call(&b->info->ffi_cif, FFI_FN(b->function), b->retval, b->ffiValues);
+    b->frame->has_gvl = true;
 
     return Qnil;
 }
@@ -268,16 +371,10 @@ do_blocking_call(void *data)
 }
 
 static VALUE
-cleanup_blocking_call(void *data)
+save_frame_exception(void *data, VALUE exc)
 {
-    BlockingCall* bc = (BlockingCall *) data;
-
-    memcpy(bc->stkretval, bc->retval, MAX(bc->info->ffi_cif.rtype->size, FFI_SIZEOF_ARG));
-    xfree(bc->params);
-    xfree(bc->ffiValues);
-    xfree(bc->retval);
-    xfree(bc);
-
+    rbffi_frame_t* frame = (rbffi_frame_t *) data;
+    frame->exc = exc;
     return Qnil;
 }
 
@@ -288,34 +385,51 @@ rbffi_CallFunction(int argc, VALUE* argv, void* function, FunctionType* fnInfo)
     void** ffiValues;
     FFIStorage* params;
     VALUE rbReturnValue;
+    rbffi_frame_t frame = { 0 };
     
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-    rbffi_thread_t oldThread;
-#endif
-
     retval = alloca(MAX(fnInfo->ffi_cif.rtype->size, FFI_SIZEOF_ARG));
     
     if (unlikely(fnInfo->blocking)) {
         BlockingCall* bc;
 
-        // due to the way thread switching works on older ruby variants, we
-        // cannot allocate anything passed to the blocking function on the stack
+        /*
+         * due to the way thread switching works on older ruby variants, we
+         * cannot allocate anything passed to the blocking function on the stack
+         */
+#if defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL)
+        ffiValues = ALLOCA_N(void *, fnInfo->parameterCount);
+        params = ALLOCA_N(FFIStorage, fnInfo->parameterCount);
+        bc = ALLOCA_N(BlockingCall, 1);
+        bc->retval = retval;
+#else
         ffiValues = ALLOC_N(void *, fnInfo->parameterCount);
         params = ALLOC_N(FFIStorage, fnInfo->parameterCount);
         bc = ALLOC_N(BlockingCall, 1);
+        bc->retval = xmalloc(MAX(fnInfo->ffi_cif.rtype->size, FFI_SIZEOF_ARG));
+        bc->stkretval = retval;
+#endif
         bc->info = fnInfo;
         bc->function = function;
         bc->ffiValues = ffiValues;
         bc->params = params;
-        bc->retval = xmalloc(MAX(fnInfo->ffi_cif.rtype->size, FFI_SIZEOF_ARG));
-        bc->stkretval = retval;
+        bc->frame = &frame;
 
         rbffi_SetupCallParams(argc, argv,
             fnInfo->parameterCount, fnInfo->parameterTypes, params, ffiValues,
             fnInfo->callbackParameters, fnInfo->callbackCount, fnInfo->rbEnums);
-        
-        rb_ensure(do_blocking_call, (VALUE) bc, cleanup_blocking_call, (VALUE) bc);
-        
+
+        rbffi_frame_push(&frame); 
+        rb_rescue2(do_blocking_call, (VALUE) bc, save_frame_exception, (VALUE) &frame, rb_eException, (VALUE) 0);
+        rbffi_frame_pop(&frame);
+
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
+        memcpy(bc->stkretval, bc->retval, MAX(bc->info->ffi_cif.rtype->size, FFI_SIZEOF_ARG));
+        xfree(bc->params);
+        xfree(bc->ffiValues);
+        xfree(bc->retval);
+        xfree(bc);
+#endif
+    
     } else {
 
         ffiValues = ALLOCA_N(void *, fnInfo->parameterCount);
@@ -325,21 +439,19 @@ rbffi_CallFunction(int argc, VALUE* argv, void* function, FunctionType* fnInfo)
             fnInfo->parameterCount, fnInfo->parameterTypes, params, ffiValues,
             fnInfo->callbackParameters, fnInfo->callbackCount, fnInfo->rbEnums);
 
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-        oldThread = rbffi_active_thread;
-        rbffi_active_thread = rbffi_thread_self();
-#endif
+        rbffi_frame_push(&frame);
         ffi_call(&fnInfo->ffi_cif, FFI_FN(function), retval, ffiValues);
-
-#if !defined(HAVE_RUBY_THREAD_HAS_GVL_P)
-        rbffi_active_thread = oldThread;
-#endif
+        rbffi_frame_pop(&frame);
     }
 
     if (unlikely(!fnInfo->ignoreErrno)) {
         rbffi_save_errno();
     }    
-    
+
+    if (RTEST(frame.exc) && frame.exc != Qnil) {
+        rb_exc_raise(frame.exc);
+    }
+
     RB_GC_GUARD(rbReturnValue) = rbffi_NativeValue_ToRuby(fnInfo->returnType, fnInfo->rbReturnType, retval);
     RB_GC_GUARD(fnInfo->rbReturnType);
     
@@ -359,10 +471,7 @@ getPointer(VALUE value, int type)
         return memory != NULL ? memory->address : NULL;
 
     } else if (type == T_STRING) {
-
-        if (rb_safe_level() >= 1 && OBJ_TAINTED(value)) {
-            rb_raise(rb_eSecurityError, "Unsafe string parameter");
-        }
+        
         return StringValuePtr(value);
 
     } else if (type == T_NIL) {
@@ -382,25 +491,6 @@ getPointer(VALUE value, int type)
     return NULL;
 }
 
-static inline char*
-getString(VALUE value, int type)
-{
-    if (type == T_STRING) {
-
-        if (rb_safe_level() >= 1 && OBJ_TAINTED(value)) {
-            rb_raise(rb_eSecurityError, "Unsafe string parameter");
-        }
-
-        return StringValueCStr(value);
-
-    } else if (type == T_NIL) {
-        return NULL;
-    }
-
-    rb_raise(rb_eArgError, "Invalid String value");
-}
-
-
 Invoker
 rbffi_GetInvoker(FunctionType *fnInfo)
 {
@@ -416,14 +506,13 @@ callback_param(VALUE proc, VALUE cbInfo)
         return NULL ;
     }
 
-    // Handle Function pointers here
+    /* Handle Function pointers here */
     if (rb_obj_is_kind_of(proc, rbffi_FunctionClass)) {
         AbstractMemory* ptr;
         Data_Get_Struct(proc, AbstractMemory, ptr);
         return ptr->address;
     }
 
-    //callback = rbffi_NativeCallback_ForProc(proc, cbInfo);
     callback = rbffi_Function_ForProc(cbInfo, proc);
     RB_GC_GUARD(callback);
 

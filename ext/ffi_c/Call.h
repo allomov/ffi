@@ -4,25 +4,34 @@
  * Copyright (c) 2009, Mike Dalessio <mike.dalessio@gmail.com>
  * Copyright (c) 2009, Aman Gupta.
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef RBFFI_INVOKE_H
-#define	RBFFI_INVOKE_H
+#ifndef RBFFI_CALL_H
+#define	RBFFI_CALL_H
 
 #ifdef	__cplusplus
 extern "C" {
@@ -57,20 +66,21 @@ typedef union {
     void* ptr;
     float f32;
     double f64;
+    long double ld;
 } FFIStorage;
-
-
+ 
 extern void rbffi_Call_Init(VALUE moduleFFI);
 
 extern void rbffi_SetupCallParams(int argc, VALUE* argv, int paramCount, Type** paramTypes,
         FFIStorage* paramStorage, void** ffiValues,
         VALUE* callbackParameters, int callbackCount, VALUE enums);
 
-extern VALUE rbffi_CallFunction(int argc, VALUE* argv, void* function, FunctionType* fnInfo);
+struct FunctionType_;
+extern VALUE rbffi_CallFunction(int argc, VALUE* argv, void* function, struct FunctionType_* fnInfo);
 
-typedef VALUE (*Invoker)(int argc, VALUE* argv, void* function, FunctionType* fnInfo);
+typedef VALUE (*Invoker)(int argc, VALUE* argv, void* function, struct FunctionType_* fnInfo);
 
-Invoker rbffi_GetInvoker(FunctionType* fnInfo);
+Invoker rbffi_GetInvoker(struct FunctionType_* fnInfo);
 
 extern VALUE rbffi_GetEnumValue(VALUE enums, VALUE value);
 extern int rbffi_GetSignedIntValue(VALUE value, int type, int minValue, int maxValue, const char* typeName, VALUE enums);
@@ -79,5 +89,5 @@ extern int rbffi_GetSignedIntValue(VALUE value, int type, int minValue, int maxV
 }
 #endif
 
-#endif	/* RBFFI_INVOKE_H */
+#endif	/* RBFFI_CALL_H */
 

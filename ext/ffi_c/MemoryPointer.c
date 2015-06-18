@@ -1,26 +1,40 @@
 /*
  * Copyright (c) 2008, 2009, Wayne Meissner
- * Copyright (c) 2008, Luc Heinrich <luc@honk-honk.com>
+ * Copyright (C) 2009 Luc Heinrich <luc@honk-honk.com>
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdbool.h>
-#include <stdint.h>
+#ifndef _MSC_VER
+# include <stdbool.h>
+# include <stdint.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <limits.h>
 #include <ruby.h>
 #include "rbffi.h"
@@ -30,7 +44,6 @@
 
 
 static VALUE memptr_allocate(VALUE klass);
-static void memptr_mark(Pointer* ptr);
 static void memptr_release(Pointer* ptr);
 static VALUE memptr_malloc(VALUE self, long size, long count, bool clear);
 static VALUE memptr_free(VALUE self);
@@ -56,6 +69,14 @@ memptr_allocate(VALUE klass)
     return obj;
 }
 
+/*
+ * call-seq: initialize(size, count=1, clear=true)
+ * @param [Fixnum, Bignum, Symbol, FFI::Type] size size of a memory cell (in bytes, or type whom size will be used)
+ * @param [Numeric] count number of cells in memory
+ * @param [Boolean] clear set memory to all-zero if +true+
+ * @return [self]
+ * A new instance of FFI::MemoryPointer.
+ */
 static VALUE
 memptr_initialize(int argc, VALUE* argv, VALUE self)
 {
@@ -64,7 +85,7 @@ memptr_initialize(int argc, VALUE* argv, VALUE self)
 
     memptr_malloc(self, rbffi_type_size(size), nargs > 1 ? NUM2LONG(count) : 1,
         RTEST(clear) || clear == Qnil);
-    
+
     if (rb_block_given_p()) {
         return rb_ensure(rb_yield, self, memptr_free, self);
     }
@@ -93,7 +114,7 @@ memptr_malloc(VALUE self, long size, long count, bool clear)
     /* ensure the memory is aligned on at least a 8 byte boundary */
     p->memory.address = (char *) (((uintptr_t) p->storage + 0x7) & (uintptr_t) ~0x7UL);;
     p->allocated = true;
-    
+
     if (clear && p->memory.size > 0) {
         memset(p->memory.address, 0, p->memory.size);
     }
@@ -129,26 +150,44 @@ memptr_release(Pointer* ptr)
     xfree(ptr);
 }
 
-static void
-memptr_mark(Pointer* ptr)
-{
-    rb_gc_mark(ptr->rbParent);
-}
-
+/*
+ * call-seq: from_string(s)
+ * @param [String] s string
+ * @return [MemoryPointer]
+ * Create a {MemoryPointer} with +s+ inside.
+ */
 static VALUE
-memptr_s_from_string(VALUE klass, VALUE s)
+memptr_s_from_string(VALUE klass, VALUE to_str)
 {
+    VALUE s = StringValue(to_str);
     VALUE args[] = { INT2FIX(1), LONG2NUM(RSTRING_LEN(s) + 1), Qfalse };
     VALUE obj = rb_class_new_instance(3, args, klass);
     rb_funcall(obj, rb_intern("put_string"), 2, INT2FIX(0), s);
-    
+
     return obj;
 }
 
 void
 rbffi_MemoryPointer_Init(VALUE moduleFFI)
 {
-    rbffi_MemoryPointerClass = rb_define_class_under(moduleFFI, "MemoryPointer", rbffi_PointerClass);
+    VALUE ffi_Pointer;
+
+    ffi_Pointer = rbffi_PointerClass;
+
+    /*
+     * Document-class: FFI::MemoryPointer < FFI::Pointer
+     * A MemoryPointer is a specific {Pointer}. It points to a memory composed of cells. All cells have the
+     * same size.
+     *
+     * @example Create a new MemoryPointer
+     *  mp = FFI::MemoryPointer.new(:long, 16)   # Create a pointer on a memory of 16 long ints.
+     * @example Create a new MemoryPointer from a String
+     *  mp1 = FFI::MemoryPointer.from_string("this is a string")
+     *  # same as:
+     *  mp2 = FFI::MemoryPointer.new(:char,16)
+     *  mp2.put_string("this is a string")
+     */
+    rbffi_MemoryPointerClass = rb_define_class_under(moduleFFI, "MemoryPointer", ffi_Pointer);
     rb_global_variable(&rbffi_MemoryPointerClass);
 
     rb_define_alloc_func(rbffi_MemoryPointerClass, memptr_allocate);

@@ -1,28 +1,45 @@
 /*
  * Copyright (c) 2008-2010 Wayne Meissner
+ * Copyright (C) 2009 Andrea Fazzi <andrea.fazzi@alcacoop.it>
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _MSC_VER
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
 
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# include "win32/stdint.h"
+#endif
 #include <ruby.h>
 
 #include <ffi.h>
@@ -86,8 +103,10 @@ variadic_initialize(VALUE self, VALUE rbFunction, VALUE rbParameterTypes, VALUE 
     VALUE retval = Qnil;
     VALUE convention = Qnil;
     VALUE fixed = Qnil;
-	VALUE rbConventionStr;
-	int i;
+#if defined(X86_WIN32)
+    VALUE rbConventionStr;
+#endif
+    int i;
 
     Check_Type(options, T_HASH);
     convention = rb_hash_aref(options, ID2SYM(rb_intern("convention")));
@@ -97,7 +116,7 @@ variadic_initialize(VALUE self, VALUE rbFunction, VALUE rbParameterTypes, VALUE 
     invoker->rbAddress = rbFunction;
     invoker->function = rbffi_AbstractMemory_Cast(rbFunction, rbffi_PointerClass)->address;
 
-#if defined(_WIN32) || defined(__WIN32__)
+#if defined(X86_WIN32)
     rbConventionStr = rb_funcall2(convention, rb_intern("to_s"), 0, NULL);
     invoker->abi = (RTEST(convention) && strcmp(StringValueCStr(rbConventionStr), "stdcall") == 0)
             ? FFI_STDCALL : FFI_DEFAULT_ABI;
@@ -151,11 +170,10 @@ variadic_invoke(VALUE self, VALUE parameterTypes, VALUE parameterValues)
     ffi_type* ffiReturnType;
     Type** paramTypes;
     VALUE* argv;
-    int paramCount = 0, i;
+    int paramCount = 0, fixedCount = 0, i;
     ffi_status ffiStatus;
-#ifndef HAVE_RUBY_THREAD_HAS_GVL_P
-    rbffi_thread_t oldThread;
-#endif
+    rbffi_frame_t frame = { 0 };
+
     Check_Type(parameterTypes, T_ARRAY);
     Check_Type(parameterValues, T_ARRAY);
 
@@ -211,7 +229,15 @@ variadic_invoke(VALUE self, VALUE parameterTypes, VALUE parameterValues)
     if (ffiReturnType == NULL) {
         rb_raise(rb_eArgError, "Invalid return type");
     }
+
+    /*Get the number of fixed args from @fixed array*/
+    fixedCount = RARRAY_LEN(rb_iv_get(self, "@fixed"));
+
+#ifdef HAVE_FFI_PREP_CIF_VAR
+    ffiStatus = ffi_prep_cif_var(&cif, invoker->abi, fixedCount, paramCount, ffiReturnType, ffiParamTypes);
+#else
     ffiStatus = ffi_prep_cif(&cif, invoker->abi, paramCount, ffiReturnType, ffiParamTypes);
+#endif
     switch (ffiStatus) {
         case FFI_BAD_ABI:
             rb_raise(rb_eArgError, "Invalid ABI specified");
@@ -225,18 +251,16 @@ variadic_invoke(VALUE self, VALUE parameterTypes, VALUE parameterValues)
 
     rbffi_SetupCallParams(paramCount, argv, -1, paramTypes, params,
         ffiValues, NULL, 0, invoker->rbEnums);
-#ifndef HAVE_RUBY_THREAD_HAS_GVL_P
-    oldThread = rbffi_active_thread;
-    rbffi_active_thread = rbffi_thread_self();
-#endif
-
+    
+    rbffi_frame_push(&frame);
     ffi_call(&cif, FFI_FN(invoker->function), retval, ffiValues);
-
-#ifndef HAVE_RUBY_THREAD_HAS_GVL_P
-    rbffi_active_thread = oldThread;
-#endif
-
+    rbffi_frame_pop(&frame);
+    
     rbffi_save_errno();
+    
+    if (RTEST(frame.exc) && frame.exc != Qnil) {
+        rb_exc_raise(frame.exc);
+    }
 
     return rbffi_NativeValue_ToRuby(invoker->returnType, invoker->rbReturnType, retval);
 }

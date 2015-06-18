@@ -1,34 +1,51 @@
 /*
  * Copyright (c) 2009-2011 Wayne Meissner
  *
+ * Copyright (c) 2008-2013, Ruby FFI project contributors
  * All rights reserved.
  *
- * This file is part of ruby-ffi.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Ruby FFI project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
  *
- * This code is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Lesser General Public License version 3 only, as
- * published by the Free Software Foundation.
- *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License
- * version 3 for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * version 3 along with this work.  If not, see <http://www.gnu.org/licenses/>.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "MethodHandle.h"
-
-
+#ifndef _MSC_VER
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
 #ifndef _WIN32
 # include <sys/mman.h>
+# include <unistd.h>
 #endif
+
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
+#ifndef _MSC_VER
+# include <stdint.h>
+# include <stdbool.h>
+#else
+# include "win32/stdbool.h"
+# if !defined(INT8_MIN)
+#  include "win32/stdint.h"
+# endif
+#endif
 #include <ruby.h>
 
 #include <ffi.h>
@@ -48,9 +65,11 @@
 #include "LastError.h"
 #include "Call.h"
 #include "ClosurePool.h"
-#include "Function.h"
 #include "MappedType.h"
 #include "Thread.h"
+#include "LongDouble.h"
+#include "MethodHandle.h"
+#include "Function.h"
 
 typedef struct Function_ {
     Pointer base;
@@ -68,6 +87,8 @@ static VALUE function_init(VALUE self, VALUE rbFunctionInfo, VALUE rbProc);
 static void callback_invoke(ffi_cif* cif, void* retval, void** parameters, void* user_data);
 static bool callback_prep(void* ctx, void* code, Closure* closure, char* errmsg, size_t errmsgsize);
 static void* callback_with_gvl(void* data);
+static VALUE invoke_callback(void* data);
+static VALUE save_callback_exception(void* data, VALUE exc);
 
 #define DEFER_ASYNC_CALLBACK 1
 
@@ -94,6 +115,7 @@ struct gvl_callback {
     void*    retval;
     void**   parameters;
     bool done;
+    rbffi_frame_t *frame;
 #if defined(DEFER_ASYNC_CALLBACK)
     struct gvl_callback* next;
 # ifndef _WIN32
@@ -111,13 +133,13 @@ static struct gvl_callback* async_cb_list = NULL;
 # ifndef _WIN32
     static pthread_mutex_t async_cb_mutex = PTHREAD_MUTEX_INITIALIZER;
     static pthread_cond_t async_cb_cond = PTHREAD_COND_INITIALIZER;
-#  if !defined(HAVE_RB_THREAD_BLOCKING_REGION)
+#  if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
     static int async_cb_pipe[2];
 #  endif
 # else
     static HANDLE async_cb_cond;
     static CRITICAL_SECTION async_cb_lock;
-#  if !defined(HAVE_RB_THREAD_BLOCKING_REGION)
+#  if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
     static int async_cb_pipe[2];
 #  endif
 # endif
@@ -188,11 +210,11 @@ function_initialize(int argc, VALUE* argv, VALUE self)
 
     nargs = rb_scan_args(argc, argv, "22", &rbReturnType, &rbParamTypes, &rbProc, &rbOptions);
 
-    //
-    // Callback with block,
-    // e.g. Function.new(:int, [ :int ]) { |i| blah }
-    // or   Function.new(:int, [ :int ], { :convention => :stdcall }) { |i| blah }
-    //
+    /*
+     * Callback with block,
+     * e.g. Function.new(:int, [ :int ]) { |i| blah }
+     * or   Function.new(:int, [ :int ], { :convention => :stdcall }) { |i| blah }
+     */
     if (rb_block_given_p()) {
         if (nargs > 3) {
             rb_raise(rb_eArgError, "cannot create function with both proc/address and block");
@@ -200,11 +222,12 @@ function_initialize(int argc, VALUE* argv, VALUE self)
         rbOptions = rbProc;
         rbProc = rb_block_proc();
     } else {
-        // Callback with proc, or Function with address
-        // e.g. Function.new(:int, [ :int ], Proc.new { |i| })
-        //      Function.new(:int, [ :int ], Proc.new { |i| }, { :convention => :stdcall })
-        //      Function.new(:int, [ :int ], addr)
-        //      Function.new(:int, [ :int ], addr, { :convention => :stdcall })
+        /* Callback with proc, or Function with address
+         * e.g. Function.new(:int, [ :int ], Proc.new { |i| })
+         *      Function.new(:int, [ :int ], Proc.new { |i| }, { :convention => :stdcall })
+         *      Function.new(:int, [ :int ], addr)
+         *      Function.new(:int, [ :int ], addr, { :convention => :stdcall })
+         */
     }
     
     infoArgv[0] = rbReturnType;
@@ -297,9 +320,9 @@ function_init(VALUE self, VALUE rbFunctionInfo, VALUE rbProc)
 
 #if defined(DEFER_ASYNC_CALLBACK)
         if (async_cb_thread == Qnil) {
-#if !defined(HAVE_RB_THREAD_BLOCKING_REGION) && defined(_WIN32)
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL)) && defined(_WIN32)
             _pipe(async_cb_pipe, 1024, O_BINARY);
-#elif !defined(HAVE_RB_THREAD_BLOCKING_REGION)
+#elif !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
             pipe(async_cb_pipe);
             fcntl(async_cb_pipe[0], F_SETFL, fcntl(async_cb_pipe[0], F_GETFL) | O_NONBLOCK);
             fcntl(async_cb_pipe[1], F_SETFL, fcntl(async_cb_pipe[1], F_GETFL) | O_NONBLOCK);
@@ -370,9 +393,9 @@ function_attach(VALUE self, VALUE module, VALUE name)
         fn->methodHandle = rbffi_MethodHandle_Alloc(fn->info, fn->base.memory.address);
     }
 
-    //
-    // Stash the Function in a module variable so it does not get garbage collected
-    //
+    /*
+     * Stash the Function in a module variable so it does not get garbage collected
+     */
     snprintf(var, sizeof(var), "@@%s", StringValueCStr(name));
     rb_cv_set(module, var, self);
 
@@ -439,17 +462,20 @@ function_release(VALUE self)
 static void
 callback_invoke(ffi_cif* cif, void* retval, void** parameters, void* user_data)
 {
-    struct gvl_callback cb;
+    struct gvl_callback cb = { 0 };
+    
     cb.closure = (Closure *) user_data;
     cb.retval = retval;
     cb.parameters = parameters;
     cb.done = false;
-
-    if (rbffi_thread_has_gvl_p()) {
-        callback_with_gvl(&cb);
+    cb.frame = rbffi_frame_current();
     
-#if defined(HAVE_RUBY_NATIVE_THREAD_P) && defined (HAVE_RB_THREAD_CALL_WITH_GVL)
-    } else if (ruby_native_thread_p()) {
+    if (cb.frame != NULL) cb.frame->exc = Qnil;
+    if (cb.frame != NULL && cb.frame->has_gvl) {
+        callback_with_gvl(&cb);
+
+#if defined(HAVE_RB_THREAD_CALL_WITH_GVL)
+    } else if (cb.frame != NULL) {
         rb_thread_call_with_gvl(callback_with_gvl, &cb);
 #endif
 #if defined(DEFER_ASYNC_CALLBACK) && !defined(_WIN32)
@@ -459,24 +485,25 @@ callback_invoke(ffi_cif* cif, void* retval, void** parameters, void* user_data)
         pthread_mutex_init(&cb.async_mutex, NULL);
         pthread_cond_init(&cb.async_cond, NULL);
 
-        // Now signal the async callback thread
+        /* Now signal the async callback thread */
         pthread_mutex_lock(&async_cb_mutex);
         empty = async_cb_list == NULL;
         cb.next = async_cb_list;
         async_cb_list = &cb;
-        pthread_mutex_unlock(&async_cb_mutex);
 
-#if !defined(HAVE_RB_THREAD_BLOCKING_REGION)
-        // Only signal if the list was empty
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
+        pthread_mutex_unlock(&async_cb_mutex);
+        /* Only signal if the list was empty */
         if (empty) {
             char c;
             write(async_cb_pipe[1], &c, 1);
         }
 #else
         pthread_cond_signal(&async_cb_cond);
+        pthread_mutex_unlock(&async_cb_mutex);
 #endif
 
-        // Wait for the thread executing the ruby callback to signal it is done
+        /* Wait for the thread executing the ruby callback to signal it is done */
         pthread_mutex_lock(&cb.async_mutex);
         while (!cb.done) {
             pthread_cond_wait(&cb.async_cond, &cb.async_mutex);
@@ -491,15 +518,15 @@ callback_invoke(ffi_cif* cif, void* retval, void** parameters, void* user_data)
 
         cb.async_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 
-        // Now signal the async callback thread
+        /* Now signal the async callback thread */
         EnterCriticalSection(&async_cb_lock);
         empty = async_cb_list == NULL;
         cb.next = async_cb_list;
         async_cb_list = &cb;
         LeaveCriticalSection(&async_cb_lock);
 
-#if !defined(HAVE_RB_THREAD_BLOCKING_REGION)
-        // Only signal if the list was empty
+#if !(defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL))
+        /* Only signal if the list was empty */
         if (empty) {
             char c;
             write(async_cb_pipe[1], &c, 1);
@@ -508,7 +535,7 @@ callback_invoke(ffi_cif* cif, void* retval, void** parameters, void* user_data)
         SetEvent(async_cb_cond);
 #endif
 
-        // Wait for the thread executing the ruby callback to signal it is done
+        /* Wait for the thread executing the ruby callback to signal it is done */
         WaitForSingleObject(cb.async_event, INFINITE);
         CloseHandle(cb.async_event);
 #endif
@@ -524,7 +551,7 @@ struct async_wait {
 static VALUE async_cb_wait(void *);
 static void async_cb_stop(void *);
 
-#if defined(HAVE_RB_THREAD_BLOCKING_REGION)
+#if defined(HAVE_RB_THREAD_BLOCKING_REGION) || defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL)
 static VALUE
 async_cb_event(void* unused)
 {
@@ -532,9 +559,13 @@ async_cb_event(void* unused)
 
     w.stop = false;
     while (!w.stop) {
+#if defined(HAVE_RB_THREAD_CALL_WITHOUT_GVL)
+        rb_thread_call_without_gvl(async_cb_wait, &w, async_cb_stop, &w);
+#else
         rb_thread_blocking_region(async_cb_wait, &w, async_cb_stop, &w);
+#endif
         if (w.cb != NULL) {
-            // Start up a new ruby thread to run the ruby callback
+            /* Start up a new ruby thread to run the ruby callback */
             rb_thread_create(async_cb_call, w.cb);
         }
     }
@@ -563,7 +594,7 @@ async_cb_event(void* unused)
 
         while (cb != NULL) {
             struct gvl_callback* next = cb->next;
-            // Start up a new ruby thread to run the ruby callback
+            /* Start up a new ruby thread to run the ruby callback */
             rb_thread_create(async_cb_call, cb);
             cb = next;
         }
@@ -595,7 +626,7 @@ async_cb_event(void* unused)
 
         while (cb != NULL) {
             struct gvl_callback* next = cb->next;
-            // Start up a new ruby thread to run the ruby callback
+            /* Start up a new ruby thread to run the ruby callback */
             rb_thread_create(async_cb_call, cb);
             cb = next;
         }
@@ -682,10 +713,10 @@ static VALUE
 async_cb_call(void *data)
 {
     struct gvl_callback* cb = (struct gvl_callback *) data;
-
-    callback_with_gvl(cb);
-
-    // Signal the original native thread that the ruby code has completed
+    
+    callback_with_gvl(data);
+        
+    /* Signal the original native thread that the ruby code has completed */
 #ifdef _WIN32
     SetEvent(cb->async_event);
 #else
@@ -700,9 +731,15 @@ async_cb_call(void *data)
 
 #endif
 
-
-static void*
+static void *
 callback_with_gvl(void* data)
+{
+    rb_rescue2(invoke_callback, (VALUE) data, save_callback_exception, (VALUE) data, rb_eException, (VALUE) 0);
+    return NULL;
+}
+
+static VALUE
+invoke_callback(void* data)
 {
     struct gvl_callback* cb = (struct gvl_callback *) data;
 
@@ -723,8 +760,8 @@ callback_with_gvl(void* data)
         VALUE rbParamType = rb_ary_entry(cbInfo->rbParameterTypes, i);
 
         if (unlikely(paramType->nativeType == NATIVE_MAPPED)) {
-            paramType = ((MappedType *) paramType)->type;
             rbParamType = ((MappedType *) paramType)->rbType;
+            paramType = ((MappedType *) paramType)->type;
         }
 
         switch (paramType->nativeType) {
@@ -764,6 +801,9 @@ callback_with_gvl(void* data)
             case NATIVE_FLOAT64:
                 param = rb_float_new(*(double *) parameters[i]);
                 break;
+            case NATIVE_LONGDOUBLE:
+	      param = rbffi_longdouble_new(*(long double *) parameters[i]);
+                break;
             case NATIVE_STRING:
                 param = (*(void **) parameters[i] != NULL) ? rb_tainted_str_new2(*(char **) parameters[i]) : Qnil;
                 break;
@@ -785,7 +825,7 @@ callback_with_gvl(void* data)
                 break;
         }
 
-        // Convert the native value into a custom ruby value
+        /* Convert the native value into a custom ruby value */
         if (unlikely(cbInfo->parameterTypes[i]->nativeType == NATIVE_MAPPED)) {
             VALUE values[] = { param, Qnil };
             param = rb_funcall2(((MappedType *) cbInfo->parameterTypes[i])->rbConverter, id_from_native, 2, values);
@@ -839,7 +879,7 @@ callback_with_gvl(void* data)
             if (TYPE(rbReturnValue) == T_DATA && rb_obj_is_kind_of(rbReturnValue, rbffi_PointerClass)) {
                 *((void **) retval) = ((AbstractMemory *) DATA_PTR(rbReturnValue))->address;
             } else {
-                // Default to returning NULL if not a value pointer object.  handles nil case as well
+                /* Default to returning NULL if not a value pointer object.  handles nil case as well */
                 *((void **) retval) = NULL;
             }
             break;
@@ -886,9 +926,19 @@ callback_with_gvl(void* data)
             break;
     }
 
-    return NULL;
+    return Qnil;
 }
 
+static VALUE 
+save_callback_exception(void* data, VALUE exc)
+{
+    struct gvl_callback* cb = (struct gvl_callback *) data;
+    
+    memset(cb->retval, 0, ((Function *) cb->closure->info)->info->returnType->ffiType->size);
+    if (cb->frame != NULL) cb->frame->exc = exc;
+    
+    return Qnil;
+}
 
 static bool
 callback_prep(void* ctx, void* code, Closure* closure, char* errmsg, size_t errmsgsize)
