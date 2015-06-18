@@ -34,6 +34,9 @@ CPU = case RbConfig::CONFIG['host_cpu'].downcase
   when /amd64|x86_64/
     "x86_64"
 
+  when /powerpc64le/
+    "ppc64le"
+
   when /ppc64|powerpc64/
     "powerpc64"
 
